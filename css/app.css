@@ -186,6 +186,10 @@ dialog h2 { margin: 0 0 8px; font-size: 17px; }
 #toast div.bad { background: #8c1d18; }
 
 @media (max-width: 640px) {
+  table.fixed { table-layout: auto; }
+  table.fixed th:nth-child(n), table.fixed td:nth-child(n) { width: auto; }
+  table.fixed td:first-child { min-width: 5.5em; }
+  table.fixed td:nth-child(3) input { min-width: 6.5em; padding: 6px 8px; }
   .hero { font-size: 34px; }
   .top-inner { flex-wrap: wrap; padding: 6px 12px; }
   .tabs { order: 3; flex-basis: 100%; }

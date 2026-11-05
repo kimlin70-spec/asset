@@ -5,11 +5,15 @@ import { h, readNumber, fmtBalance, shortDate, accountName, unitWord } from '../
 
 let lastResult = null;
 let countDate = null;
+let countDay = null; // countDate 기본값을 정한 날(날이 바뀌면 오늘로 다시)
 
 export function renderCount(main, ctx) {
   const { ledger } = ctx.store;
   const today = ctx.today;
-  if (!countDate || countDate > today) countDate = today;
+  if (countDay !== today || !countDate || countDate > today) {
+    countDate = today;
+    countDay = today;
+  }
   if (lastResult) main.append(resultCard(ctx, lastResult));
   const empty = !ledger.items.length;
   if (!empty) main.append(checkCard(ctx));
@@ -69,6 +73,7 @@ function checkCard(ctx) {
     h('div', { class: 'row' }, h('label', { style: 'margin:0' }, '실사 날짜'), h('div', { style: 'width:180px' }, date)),
   );
 
+  const idBase = L.newId('c'); // 응답이 끊겨 다시 눌러도 두 번 저장되지 않게
   const rows = []; // { item, input }
   const byAcc = new Map();
   for (const it of ledger.items) {
@@ -180,7 +185,8 @@ function checkCard(ctx) {
           const item = cur.items.find((i) => i.id === r.itemId);
           push(accountId, { itemId: item.id, value: L.toInternal(item, a.value) });
         }
-        for (const [accountId, vals] of values) cur = L.addCount(cur, { accountId, date: d, values: vals });
+        let n = 0;
+        for (const [accountId, vals] of values) cur = L.addCount(cur, { id: `${idBase}_${n++}`, accountId, date: d, values: vals });
         return cur;
       };
       op(ctx.store.ledger);
@@ -241,12 +247,14 @@ function pasteCard(ctx, empty) {
   const preview = h('div');
   const saveBtn = h('button', { class: 'btn primary', type: 'button', disabled: true }, '붙여넣은 내용 저장');
   let parsed = { rows: [], errors: [] };
+  const idBase = L.newId('c');
   const renderPreview = () => {
     parsed = L.parsePaste(ta.value);
     const ledger = ctx.store.ledger;
+    const problems = [...parsed.errors, ...L.pasteConflicts(ledger, parsed.rows)];
     preview.replaceChildren();
-    if (parsed.errors.length) {
-      preview.append(h('div', { class: 'notice bad' }, h('b', null, '고칠 줄이 있어요(저장 안 됨)'), parsed.errors.map((e) => h('div', null, e))));
+    if (problems.length) {
+      preview.append(h('div', { class: 'notice bad' }, h('b', null, '고칠 줄이 있어요(저장 안 됨)'), problems.map((e) => h('div', null, e))));
     }
     if (parsed.rows.length) {
       let total = 0;
@@ -280,7 +288,7 @@ function pasteCard(ctx, empty) {
         ),
       );
     }
-    saveBtn.disabled = !parsed.rows.length || parsed.errors.length > 0;
+    saveBtn.disabled = !parsed.rows.length || problems.length > 0;
   };
   ta.addEventListener('input', renderPreview);
   saveBtn.addEventListener('click', async () => {
@@ -290,7 +298,7 @@ function pasteCard(ctx, empty) {
       return;
     }
     const rows = parsed.rows;
-    const op = (l) => L.applyPaste(l, rows, d);
+    const op = (l) => L.applyPaste(l, rows, d, idBase);
     try {
       op(ctx.store.ledger);
     } catch (e) {

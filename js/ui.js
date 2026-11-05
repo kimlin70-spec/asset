@@ -91,6 +91,11 @@ export function readNumber(input) {
   return L.parseNumber(t);
 }
 
+// 입력 칸에 미리 채울 숫자(쉼표 없이, 지수 표기 없이): 0.0000003 → "0.0000003"
+export function plainNumber(item, x) {
+  return fmtNum(x, L.itemDecimals(item || {})).replace(/,/g, '').replace('−', '-');
+}
+
 export function unitWord(item) {
   if (!L.isQtyItem(item)) return '';
   return item.assetClass === '코인' ? '개' : '주';

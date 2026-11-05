@@ -639,3 +639,82 @@ test('실사 기간 요약: 대출을 기록 없이 갚았으면 현금과 부�
   const p = L.periodSummary(s.l, {}, '2026-11-01');
   assert.equal(p.cash, 0);
 });
+
+test('실사 기간 요약: 계좌마다 이전 실사가 달라도 기간을 계좌별로 잰다', () => {
+  const s = setup();
+  const { kiwoom, bank, cash, deposit } = s.ids;
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-09-01', values: [{ itemId: deposit, value: 5000000 }] });
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-09-01', values: [{ itemId: cash, value: 1000000 }] });
+  s.l = L.addEntry(s.l, L.adjustTx(s.l, { date: '2026-10-10', itemId: deposit, newShownValue: 6000000 })); // 빠뜨린 입금 +100만
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-10-20', values: [{ itemId: cash, value: 1000000 }] }); // 증권만 따로 실사
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-11-01', values: [{ itemId: deposit, value: 3000000 }] });
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-01', values: [{ itemId: cash, value: 1000000 }] });
+  const p = L.periodSummary(s.l, {}, '2026-11-01');
+  assert.equal(p.prevDate, '2026-09-01');
+  assert.equal(p.days, 61);
+  assert.equal(p.cash, -2000000); // 고치기 +100만, 실사 차이 -300만
+  assert.equal(p.cashPerMonth, Math.round((-2000000 / 61) * 30.4));
+});
+
+test('실사 기간 요약: 같은 날 다시 실사해도 새로 넣은 항목의 값은 흐름이 아니다', () => {
+  const s = setup();
+  const { kiwoom, bank, cash, deposit } = s.ids;
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-09-01', values: [{ itemId: deposit, value: 5000000 }] });
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-01', values: [{ itemId: cash, value: 1000000 }] }); // 처음 넣은 계좌(오타)
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-01', values: [{ itemId: cash, value: 10000000 }] }); // 같은 날 바로잡음
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-11-01', values: [{ itemId: deposit, value: 5000000 }] });
+  const p = L.periodSummary(s.l, {}, '2026-11-01');
+  assert.equal(p.added, 10000000);
+  assert.equal(p.cash, 0);
+});
+
+test('붙여넣기: 이미 있는 항목과 부채 여부·통화가 다르면 막는다', () => {
+  const s = setup();
+  const text = ['키움\t부채\t예수금\t\t5,000,000\t', '키움\t현금\t달러 예수금\t\t1,400,000\t', '키움\t국내주식\t예수금2\t005930\t1\t'].join('\n');
+  const { rows, errors } = L.parsePaste(text);
+  assert.deepEqual(errors, []);
+  const c = L.pasteConflicts(s.l, rows);
+  assert.equal(c.length, 2);
+  assert.match(c[0], /부채/);
+  assert.match(c[1], /USD/);
+  assert.throws(() => L.applyPaste(s.l, rows, '2026-11-05'), /부채/);
+});
+
+test('붙여넣기: "₩ -"는 0, 첫 줄이 숫자 없는 자료 줄이면 오류로 알린다', () => {
+  let r = L.parsePaste('증권\t현금\t예수금\t\t₩ -\t');
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.rows[0].amount, 0);
+  r = L.parsePaste('증권\t현금\t예수금\t\t#N/A\t\n증권\t현금\t달러\t\t1\tUSD');
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0], /1번째 줄/);
+});
+
+test('같은 id로 다시 저장하면 두 번 들어가지 않는다(응답이 끊긴 뒤 다시 누른 저장)', () => {
+  const s = setup();
+  const tx = { ...L.inTx({ date: '2026-11-01', itemId: s.ids.cash, amount: 100 }), id: 't_fixed' };
+  const once = L.addEntry(s.l, tx);
+  const twice = L.addEntry(once, tx);
+  assert.equal(twice, once);
+  assert.equal(bal(twice, s.ids.cash), 100);
+});
+
+test('HTS 형식의 영문 섞인 국내 코드(A0091C0)', () => {
+  assert.equal(L.normalizeCode('A0091C0'), '0091C0');
+  assert.equal(L.quoteKey({ assetClass: '국내주식', code: 'A0091C0' }), 'KR:0091C0');
+});
+
+test('환율 갱신이 실패하면 외화 항목도 "갱신 실패"', () => {
+  const s = setup();
+  s.l = L.addEntry(s.l, L.inTx({ date: '2026-11-01', itemId: s.ids.usd, amount: 10 }));
+  const rows = L.valuate(s.l, { quotes: { 'FX:USD': { price: 1300, ok: false, at: '2026-10-01T00:00:00Z' } } });
+  const r = rows.find((x) => x.item.id === s.ids.usd);
+  assert.equal(r.status, 'stale');
+  assert.equal(r.staleAt, '2026-10-01T00:00:00Z');
+  assert.equal(r.value, 13000);
+});
+
+test('바로잡기: 바꿀 게 없으면 알린다', () => {
+  const s = setup();
+  s.l = L.addEntry(s.l, L.inTx({ date: '2026-11-01', itemId: s.ids.cash, amount: 100 }));
+  assert.throws(() => L.adjustTx(s.l, { date: '2026-11-02', itemId: s.ids.cash, newShownValue: 100 }), /이미 그 값/);
+});

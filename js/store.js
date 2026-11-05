@@ -71,11 +71,19 @@ export class Store {
   // 저장소 확인 → 없는 데이터 파일 만들기(있으면 절대 덮어쓰지 않음) → 자동 시세 설정 맞추기
   async prepare(workflowText, onStep = () => {}) {
     onStep('저장소 확인');
+    let info;
     try {
-      await this.client.checkRepo();
+      info = await this.client.checkRepo();
     } catch (e) {
       if (e instanceof GitHubError) e.during = 'repo';
       throw e;
+    }
+    // 개인 자료이므로 공개 저장소에는 절대 쓰지 않는다
+    if (!info || info.private !== true) {
+      throw new StoreError(
+        `${this.repoName}은(는) 공개(Public) 저장소예요. 내 자료는 비공개 저장소에만 둘 수 있어요. 저장소 이름을 확인하거나, GitHub에서 그 저장소를 Private으로 바꾼 뒤 다시 눌러 주세요.`,
+        'public',
+      );
     }
     const initial = {
       [FILES.ledger]: () => L.emptyLedger(),
@@ -133,9 +141,11 @@ export class Store {
   }
 
   // 장부 바꾸기. op(장부) → 새 장부. 다른 곳에서 먼저 저장했으면(409) 최신 장부를 다시 읽고 op를 다시 적용한다.
+  // op가 장부를 그대로 돌려주면(같은 id가 이미 있음 = 앞에서 누른 저장이 이미 들어감) 저장하지 않고 'already'를 돌려준다.
   async mutate(op, message) {
     for (let attempt = 0; ; attempt++) {
       const next = op(this.ledger); // LedgerError는 그대로 위로
+      if (next === this.ledger) return 'already';
       const problems = L.validateLedger(next);
       if (problems.length) throw new StoreError('저장 전 검사에서 문제가 나와 저장하지 않았어요: ' + problems[0], 'invalid');
       try {

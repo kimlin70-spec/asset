@@ -1,7 +1,7 @@
 // 보유 목록에서 항목을 눌렀을 때: 정보 보기, 이름·코드·통화 고치기, 값 바로잡기(액면분할·빠뜨린 입금 등)
 import * as L from '../ledger.js';
 import { fmtMoney } from '../format.js';
-import { h, openDialog, readNumber, fmtBalance, accountName, kstTime } from '../ui.js';
+import { h, openDialog, readNumber, fmtBalance, accountName, kstTime, plainNumber, shortDate } from '../ui.js';
 
 const SOURCE_NAMES = { naver: '네이버', yahoo: '야후', upbit: '업비트', 'er-api': 'ExchangeRate-API' };
 
@@ -27,9 +27,16 @@ export function openItemDialog(ctx, item) {
     const cur = qty ? null : h('input', { type: 'text', value: item.currency || 'KRW' });
 
     const saveInfo = async () => {
-      const fields = { name: name.value, assetClass: cls.value };
-      if (code) fields.code = code.value;
-      if (cur) fields.currency = cur.value;
+      // 바꾼 칸만 보낸다(다른 기기에서 먼저 고친 칸을 옛 값으로 되돌리지 않게)
+      const fields = {};
+      if (name.value.trim() !== item.name) fields.name = name.value;
+      if (cls.value !== item.assetClass) fields.assetClass = cls.value;
+      if (code && L.normalizeCode(code.value) !== item.code) fields.code = code.value;
+      if (cur && (L.normalizeCurrency(cur.value) || cur.value.trim().toUpperCase()) !== (item.currency || 'KRW')) fields.currency = cur.value;
+      if (!Object.keys(fields).length) {
+        ctx.toast('바꾼 것이 없어요.');
+        return;
+      }
       let op;
       try {
         op = (l) => L.updateItem(l, item.id, fields);
@@ -38,21 +45,30 @@ export function openItemDialog(ctx, item) {
         ctx.toast(ctx.explain(e), 'bad');
         return;
       }
-      if (await ctx.save(op, `항목 고치기: ${fields.name}`, '고쳤어요. 코드를 바꿨으면 다음 시세 갱신 때 반영돼요.')) {
+      if (await ctx.save(op, `항목 고치기: ${fields.name || item.name}`, '고쳤어요. 코드를 바꿨으면 다음 시세 갱신 때 반영돼요.')) {
         close();
         ctx.render();
       }
     };
 
-    const fixValue = h('input', { type: 'text', inputmode: 'decimal', placeholder: row ? String(L.toShown(item, row.balance)) : '' });
+    const fixId = L.newId('t');
+    const fixValue = h('input', { type: 'text', inputmode: 'decimal', placeholder: row ? plainNumber(item, L.toShown(item, row.balance)) : '' });
     const fixDate = h('input', { type: 'date', value: today, max: today });
     const saveFix = async () => {
       let op;
       try {
         const v = readNumber(fixValue);
+        const date = fixDate.value;
         if (v == null || Number.isNaN(v)) throw new L.LedgerError('바뀐 값을 숫자로 넣어 주세요.');
-        if (!L.isDateStr(fixDate.value) || fixDate.value > today) throw new L.LedgerError('날짜를 골라 주세요(오늘까지).');
-        op = (l) => L.addEntry(l, L.adjustTx(l, { date: fixDate.value, itemId: item.id, newShownValue: v, memo: '바로잡기' }));
+        if (!L.isDateStr(date) || date > today) throw new L.LedgerError('날짜를 골라 주세요(오늘까지).');
+        // 이 항목의 실사보다 앞선 날짜면 지금 값이 안 바뀐다 → 저장하지 않고 알려 준다
+        const probe = L.adjustTx(ctx.store.ledger, { date, itemId: item.id, newShownValue: v });
+        const abs = L.absorbedBy(ctx.store.ledger, probe);
+        if (abs.length) {
+          const d = abs.map((x) => x.countDate).sort().at(-1);
+          throw new L.LedgerError(`${shortDate(d, today)} 실사보다 앞선 날짜라 지금 값은 안 바뀌어요. 실사 뒤 날짜(예: 오늘)로 바로잡아 주세요.`);
+        }
+        op = (l) => L.addEntry(l, { ...L.adjustTx(l, { date, itemId: item.id, newShownValue: v, memo: '바로잡기' }), id: fixId });
         op(ctx.store.ledger);
       } catch (e) {
         ctx.toast(ctx.explain(e), 'bad');

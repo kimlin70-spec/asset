@@ -129,9 +129,9 @@ test('장부가 바뀔 때(missing 모드)는 시세가 없는 것만 받는다'
     version: 1,
     updatedAt: '2026-11-04T21:48:00Z',
     quotes: {
-      'KR:005930': { price: 70000, currency: 'KRW', ok: true },
-      'COIN:BTC': { price: 1, currency: 'KRW', ok: true },
-      'COIN:NOPE': { price: 1, currency: 'KRW', ok: true },
+      'KR:005930': { price: 70000, currency: 'KRW', ok: true, tried: '2026-11-04T21:48:00Z' },
+      'COIN:BTC': { price: 1, currency: 'KRW', ok: true, tried: '2026-11-04T21:48:00Z' },
+      'COIN:NOPE': { price: 1, currency: 'KRW', ok: true, tried: '2026-11-04T21:48:00Z' },
     },
   };
   const res = await updatePrices({ ledger, prices: prev, mode: 'missing', now: new Date('2026-11-05T03:00:00Z'), fetchImpl, delayMs: 0 });
@@ -167,4 +167,25 @@ test('자동 시세 설정 파일: 앱 저장소 이름을 채운다', () => {
   assert.match(filled, /timeout-minutes: 10/);
   assert.equal(appRepoFromLocation({ hostname: 'kimlin70-spec.github.io', pathname: '/asset/' }), 'kimlin70-spec/asset');
   assert.equal(appRepoFromLocation({ hostname: 'localhost', pathname: '/' }), 'kimlin70-spec/asset');
+});
+
+test('missing 모드: 마지막 전체 갱신 전에 받은 옛 시세(다 팔았다 다시 산 종목)는 다시 받는다', async () => {
+  let l = L.emptyLedger();
+  const { rows } = L.parsePaste('증권\t해외주식\t애플\tAAPL\t10\t\t');
+  l = L.applyPaste(l, rows, '2026-11-05');
+  const fetchImpl = fakeFetch([
+    ['chart/AAPL', { body: yahooBody({ regularMarketPrice: 260, currency: 'USD' }) }],
+    ['chart/USDKRW', { body: yahooBody({ regularMarketPrice: 1400, currency: 'KRW' }) }],
+  ]);
+  const prev = { version: 1, updatedAt: '2026-11-04T21:48:00Z', quotes: { 'INTL:AAPL': { price: 150, currency: 'USD', ok: true, at: '2026-01-18T21:48:00Z', tried: '2026-01-18T21:48:00Z' } } };
+  const res = await updatePrices({ ledger: l, prices: prev, mode: 'missing', now: new Date('2026-11-05T03:00:00Z'), fetchImpl, delayMs: 0 });
+  assert.equal(res.prices.quotes['INTL:AAPL'].price, 260);
+});
+
+test('업비트가 통째로 안 되면 "없는 코드"가 아니라 실제 오류를 남긴다', async () => {
+  const ledger = sampleLedger();
+  const fetchImpl = fakeFetch([['api.upbit.com', { status: 503 }]]);
+  const res = await updatePrices({ ledger, prices: null, now: new Date('2026-11-05T00:00:00Z'), fetchImpl, delayMs: 0 });
+  assert.match(res.prices.quotes['COIN:BTC'].error, /upbit: HTTP 503/);
+  assert.doesNotMatch(res.prices.quotes['COIN:BTC'].error, /없는 코드/);
 });

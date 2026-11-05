@@ -38,12 +38,18 @@ async function main() {
   const res = await updatePrices({ ledger, prices, mode, now });
   write('prices.json', res.prices);
 
+  console.log(`모드 ${mode}: 시세 성공 ${res.ok.length}개, 실패 ${res.failed.length}개`);
+  for (const k of res.failed) console.log(`  실패 ${k}: ${res.prices.quotes[k].error}`);
+
+  // 장부에 아직 아무것도 없으면 합계를 남기지 않는다(0원 기록이 추이·증감을 망치지 않게)
+  if (!ledger.entries.length) {
+    write('history.json', history);
+    console.log('장부가 비어 있어 오늘 합계는 남기지 않아요.');
+    return 0;
+  }
   const today = L.kstDate(now);
   const entry = L.historyEntry(ledger, res.prices, today);
   write('history.json', L.putHistory(history, today, entry));
-
-  console.log(`모드 ${mode}: 시세 성공 ${res.ok.length}개, 실패 ${res.failed.length}개`);
-  for (const k of res.failed) console.log(`  실패 ${k}: ${res.prices.quotes[k].error}`);
   console.log(`${today} 순자산 ${entry.net.toLocaleString('ko-KR')}원`);
   return 0;
 }

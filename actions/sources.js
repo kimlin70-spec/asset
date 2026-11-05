@@ -94,7 +94,7 @@ export async function upbit(codes, ctx) {
     return parseUpbitTickers(await getJSON(url, ctx));
   } catch (e) {
     if (codes.length === 1) throw e;
-    // 틀린 코드가 하나라도 섞이면 묶음 전체가 실패할 수 있어 하나씩 다시
+    // 틀린 코드가 하나라도 섞이면 묶음 전체가 실패할 수 있어 하나씩 다시. 전부 실패하면 업비트 문제로 본다.
     const out = {};
     for (const c of codes) {
       try {
@@ -103,6 +103,7 @@ export async function upbit(codes, ctx) {
         /* 이 코드만 실패 */
       }
     }
+    if (!Object.keys(out).length) throw e;
     return out;
   }
 }
@@ -126,7 +127,12 @@ export async function updatePrices({ ledger, prices, mode = 'all', now = new Dat
   const ctx = { fetchImpl: fetchImpl || ((...a) => fetch(...a)) };
   const at = now.toISOString();
   const quotes = { ...((prices && prices.quotes) || {}) };
-  const has = (key) => quotes[key] && quotes[key].price > 0;
+  // 'missing' 모드에서 "있다"는 것은 마지막 전체 갱신 뒤에 받은 시세만(다 팔았다 다시 산 종목의 옛 가격은 다시 받는다)
+  const updatedAt = prices && prices.updatedAt;
+  const has = (key) => {
+    const q = quotes[key];
+    return !!(q && q.price > 0 && (mode === 'all' || (updatedAt && q.tried && q.tried >= updatedAt)));
+  };
   const ok = [];
   const failed = [];
   const put = (key, q, source) => {
@@ -216,6 +222,5 @@ export async function updatePrices({ ledger, prices, mode = 'all', now = new Dat
     fail(key, errors);
   }
 
-  const updatedAt = mode === 'all' ? at : (prices && prices.updatedAt) || at;
-  return { prices: { version: 1, updatedAt, quotes }, ok, failed };
+  return { prices: { version: 1, updatedAt: mode === 'all' ? at : updatedAt || at, quotes }, ok, failed };
 }

@@ -1,6 +1,6 @@
 // 입력: 매수, 매도, 들어온 돈, 나간 돈, 옮김
 import * as L from '../ledger.js';
-import { fmtNum } from '../format.js';
+import { fmtMoney } from '../format.js';
 import { h, readNumber, shortDate } from '../ui.js';
 import { itemPicker, resolvePicked } from './picker.js';
 
@@ -77,16 +77,28 @@ async function finish(ctx, ok) {
   ctx.render();
 }
 
-// 같은 계좌의 현금 항목(예수금 먼저)
-function cashOfAccount(ledger, accountId) {
+// 같은 계좌의 현금 항목: 종목 시세와 같은 통화 먼저, 그다음 예수금
+function cashOfAccount(ledger, accountId, preferCur = 'KRW') {
   const cands = ledger.items.filter((i) => i.accountId === accountId && !L.isQtyItem(i) && i.assetClass === '현금');
-  return cands.find((i) => /예수금/.test(i.name)) || cands[0] || null;
+  const same = cands.filter((i) => (i.currency || 'KRW') === preferCur);
+  const pool = same.length ? same : cands;
+  return pool.find((i) => /예수금/.test(i.name)) || pool[0] || null;
+}
+
+// 고른 돈 항목의 통화(새 항목이면 적은 통화)
+function pickedCurrency(ledger, picked) {
+  if (!picked) return 'KRW';
+  if (picked.create) return L.normalizeCurrency(picked.create.currency) || 'KRW';
+  const it = ledger.items.find((i) => i.id === picked.itemId);
+  return (it && it.currency) || 'KRW';
 }
 
 function tradeForm(form, ctx) {
   const buy = type === 'buy';
   const ledger = ctx.store.ledger;
-  const cashPick = itemPicker(ctx, { filter: (i) => !L.isQtyItem(i), newClass: '현금', label: buy ? '돈이 나간 곳' : '돈이 들어온 곳' });
+  const entryId = L.newId('t'); // 응답이 끊겨 다시 눌러도 두 번 저장되지 않게
+  const cashPick = itemPicker(ctx, { filter: (i) => !L.isQtyItem(i), newClass: '현금', label: buy ? '돈이 나간 곳' : '돈이 들어온 곳', onChange: () => setMode(byUnit) });
+  cashPick.el.addEventListener('input', () => setMode(byUnit));
   const stockPick = itemPicker(ctx, {
     filter: (i, b) => L.isQtyItem(i) && (buy || b > 0),
     allowNew: buy,
@@ -94,9 +106,13 @@ function tradeForm(form, ctx) {
     label: '종목',
     onChange: (id) => {
       const it = ledger.items.find((i) => i.id === id);
-      const cash = it && cashOfAccount(ledger, it.accountId);
-      if (cash) cashPick.set(cash.id);
-      update();
+      if (it) {
+        const q = (ctx.store.prices.quotes || {})[L.quoteKey(it)];
+        const cur = (q && q.currency) || (L.lastTradePrice(ledger, it.id) || {}).currency || 'KRW';
+        const cash = cashOfAccount(ledger, it.accountId, cur);
+        if (cash) cashPick.set(cash.id);
+      }
+      setMode(byUnit);
     },
   });
   const qty = h('input', { type: 'text', inputmode: 'decimal', placeholder: '예: 10', oninput: () => update() });
@@ -104,12 +120,17 @@ function tradeForm(form, ctx) {
   const money = h('input', { type: 'text', inputmode: 'decimal', oninput: () => update() });
   const moneyLabel = h('label');
   const modeSeg = h('div', { class: 'seg' });
-  const setMode = (u) => {
+  function setMode(u) {
     byUnit = u;
-    moneyLabel.textContent = byUnit ? '1주 단가' : buy ? '정산금액(수수료·세금 포함, 실제로 나간 돈)' : '정산금액(수수료·세금 뺀, 실제로 들어온 돈)';
+    const cur = pickedCurrency(ctx.store.ledger, cashPick.value());
+    moneyLabel.textContent = byUnit
+      ? `1주 단가 (${cur})`
+      : buy
+        ? `정산금액 (${cur}, 수수료·세금 포함, 실제로 나간 돈)`
+        : `정산금액 (${cur}, 수수료·세금 뺀, 실제로 들어온 돈)`;
     for (const b of modeSeg.children) b.setAttribute('aria-pressed', String(b.dataset.u === String(byUnit)));
     update();
-  };
+  }
   modeSeg.append(
     h('button', { type: 'button', 'data-u': 'false', onclick: () => setMode(false) }, '총액으로'),
     h('button', { type: 'button', 'data-u': 'true', onclick: () => setMode(true) }, '단가로'),
@@ -124,7 +145,9 @@ function tradeForm(form, ctx) {
   }
   function update() {
     const t = total();
-    preview.textContent = t != null ? `${buy ? '나가는' : '들어오는'} 돈 ${fmtNum(t, 2)} (돈 항목의 통화 기준). 정산금액을 모르면 단가로 넣어도 돼요. 차이는 다음 실사 때 맞춰져요.` : '';
+    const cur = pickedCurrency(ctx.store.ledger, cashPick.value());
+    preview.textContent =
+      t != null ? `${buy ? '나가는' : '들어오는'} 돈 ${fmtMoney(t, cur)}. 정산금액을 모르면 단가로 넣어도 돼요. 차이는 다음 실사 때 맞춰져요.` : '';
   }
   setMode(false);
 
@@ -148,7 +171,9 @@ function tradeForm(form, ctx) {
           onclick: async () => {
             let op;
             try {
-              checkDate(ctx, common.date.value);
+              const date = common.date.value;
+              const memo = common.memo.value.trim();
+              checkDate(ctx, date);
               const q = need(readNumber(qty), '수량');
               const amount = need(total(), '금액');
               const s = stockPick.value();
@@ -159,8 +184,8 @@ function tradeForm(form, ctx) {
                 if (!L.isQtyItem(r.ledger.items.find((i) => i.id === stockItemId)))
                   throw new L.LedgerError('종목은 코드가 있는 항목이어야 해요(새 종목이면 코드를 넣어 주세요).');
                 r = resolvePicked(r.ledger, c, '돈 항목');
-                const tx = { date: common.date.value, stockItemId, cashItemId: r.itemId, qty: q, amount, memo: common.memo.value.trim() };
-                return L.addEntry(r.ledger, buy ? L.buyTx(tx) : L.sellTx(tx));
+                const tx = { date, stockItemId, cashItemId: r.itemId, qty: q, amount, memo };
+                return L.addEntry(r.ledger, { ...(buy ? L.buyTx(tx) : L.sellTx(tx)), id: entryId });
               };
               op(ctx.store.ledger); // 미리 검사
             } catch (e) {
@@ -178,11 +203,16 @@ function tradeForm(form, ctx) {
 
 function oneForm(form, ctx) {
   const incoming = type === 'in';
-  const pick = itemPicker(ctx, { newClass: '현금', label: '항목', onChange: () => (unit.textContent = labelFor()) });
+  const entryId = L.newId('t');
+  const pick = itemPicker(ctx, { newClass: '현금', label: '항목', onChange: () => refresh() });
   const amount = h('input', { type: 'text', inputmode: 'decimal', placeholder: '예: 150,000' });
   const unit = h('label');
-  const labelFor = () => (pick.isQty() ? '수량' : '금액');
-  unit.textContent = labelFor();
+  const labelFor = () => (pick.isQty() ? '수량' : `금액 (${pickedCurrency(ctx.store.ledger, pick.value())})`);
+  const refresh = () => (unit.textContent = labelFor());
+  // 새 항목 칸(코드·통화)을 바꿀 때도 수량/금액 표시를 맞춘다
+  pick.el.addEventListener('input', refresh);
+  pick.el.addEventListener('change', refresh);
+  refresh();
   const common = commonFields(ctx);
   common.memo.placeholder = incoming ? '예: 배당, 이자, 월급' : '예: 생활비, 카드값, 보험료';
   form.append(
@@ -203,13 +233,15 @@ function oneForm(form, ctx) {
           onclick: async () => {
             let op;
             try {
-              checkDate(ctx, common.date.value);
-              const n = need(readNumber(amount), labelFor());
+              const date = common.date.value;
+              const memo = common.memo.value.trim();
+              checkDate(ctx, date);
+              const n = need(readNumber(amount), pick.isQty() ? '수량' : '금액');
               const p = pick.value();
               op = (l) => {
                 const r = resolvePicked(l, p);
-                const tx = { date: common.date.value, itemId: r.itemId, amount: n, memo: common.memo.value.trim() };
-                return L.addEntry(r.ledger, incoming ? L.inTx(tx) : L.outTx(tx));
+                const tx = { date, itemId: r.itemId, amount: n, memo };
+                return L.addEntry(r.ledger, { ...(incoming ? L.inTx(tx) : L.outTx(tx)), id: entryId });
               };
               op(ctx.store.ledger);
             } catch (e) {
@@ -226,6 +258,7 @@ function oneForm(form, ctx) {
 }
 
 function moveForm(form, ctx) {
+  const entryId = L.newId('t');
   const from = itemPicker(ctx, { newClass: '현금', label: '보낸 곳' });
   const to = itemPicker(ctx, { newClass: '현금', label: '받은 곳' });
   const sent = h('input', { type: 'text', inputmode: 'decimal', placeholder: '예: 1,400,000' });
@@ -254,7 +287,9 @@ function moveForm(form, ctx) {
           onclick: async () => {
             let op;
             try {
-              checkDate(ctx, common.date.value);
+              const date = common.date.value;
+              const memo = common.memo.value.trim();
+              checkDate(ctx, date);
               const a = need(readNumber(sent), '보낸 양');
               const gv = readNumber(got);
               const b = gv == null ? a : need(gv, '받은 양');
@@ -265,7 +300,7 @@ function moveForm(form, ctx) {
                 const fromItemId = r.itemId;
                 r = resolvePicked(r.ledger, t, '받은 곳');
                 if (r.itemId === fromItemId) throw new L.LedgerError('보낸 곳과 받은 곳이 같아요.');
-                return L.addEntry(r.ledger, L.moveTx({ date: common.date.value, fromItemId, fromAmount: a, toItemId: r.itemId, toAmount: b, memo: common.memo.value.trim() }));
+                return L.addEntry(r.ledger, { ...L.moveTx({ date, fromItemId, fromAmount: a, toItemId: r.itemId, toAmount: b, memo }), id: entryId });
               };
               op(ctx.store.ledger);
             } catch (e) {

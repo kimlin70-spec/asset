@@ -1,7 +1,7 @@
 // 기록: 거래·실사 목록(최근순), 고치기·지우기
 import * as L from '../ledger.js';
 import { fmtNum, fmtMoney } from '../format.js';
-import { h, shortDate, accountName, unitWord, confirmBox, openDialog, readNumber } from '../ui.js';
+import { h, shortDate, accountName, unitWord, confirmBox, openDialog, readNumber, plainNumber } from '../ui.js';
 
 let shownCount = 50;
 
@@ -108,14 +108,14 @@ function editDialog(ctx, e, items) {
     if (isCount) {
       for (const v of e.values) {
         const it = items.get(v.itemId);
-        const input = h('input', { type: 'text', inputmode: 'decimal', value: String(L.toShown(it, v.value)) });
+        const input = h('input', { type: 'text', inputmode: 'decimal', value: plainNumber(it, L.toShown(it, v.value)) });
         fields.push({ v, it, input });
         rows.append(h('label', null, it ? it.name : '?'), input);
       }
     } else {
       for (const l of e.lines) {
         const it = items.get(l.itemId);
-        const input = h('input', { type: 'text', inputmode: 'decimal', value: String(Math.abs(l.delta)) });
+        const input = h('input', { type: 'text', inputmode: 'decimal', value: plainNumber(it, Math.abs(l.delta)) });
         fields.push({ l, it, input });
         const dir = it && it.assetClass === L.DEBT ? (l.delta < 0 ? '빚 늘어남' : '빚 줄어듦') : l.delta < 0 ? '빠짐' : '늘어남';
         rows.append(h('label', null, `${label(ctx, it)} (${dir})`), input);
@@ -138,7 +138,13 @@ function editDialog(ctx, e, items) {
           const lines = fields.map(({ l, it, input }) => ({ itemId: l.itemId, delta: Math.sign(l.delta || 1) * Math.abs(read(input, it ? it.name : '?')) }));
           next = { date: date.value, type: e.type, lines, memo: memo.value.trim() };
         }
-        op = (l) => L.updateEntry(l, e.id, next);
+        const snapshot = JSON.stringify(e);
+        op = (l) => {
+          // 다른 곳에서 먼저 고친 기록이면 옛 내용으로 덮어쓰지 않는다
+          const fresh = l.entries.find((x) => x.id === e.id);
+          if (!fresh || JSON.stringify(fresh) !== snapshot) throw new L.LedgerError('다른 곳에서 먼저 고쳤거나 지운 기록이에요. ↻를 누른 뒤 다시 고쳐 주세요.');
+          return L.updateEntry(l, e.id, next);
+        };
         op(ctx.store.ledger);
       } catch (err) {
         ctx.toast(ctx.explain(err), 'bad');

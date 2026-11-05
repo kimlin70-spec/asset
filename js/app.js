@@ -85,6 +85,10 @@ const ctx = {
   },
 
   async reload() {
+    if (saving) {
+      toast('저장하는 중이에요. 잠시만 기다려 주세요.');
+      return;
+    }
     if (!ctx.store) return ctx.connect();
     try {
       await ctx.store.load();
@@ -104,8 +108,9 @@ const ctx = {
     saving = true;
     document.body.classList.add('saving');
     try {
-      await ctx.store.mutate(op, message);
-      if (okMessage) toast(okMessage);
+      const r = await ctx.store.mutate(op, message);
+      if (r === 'already') toast('앞에서 누른 저장이 이미 들어가 있었어요. 기록 화면에서 확인해 주세요.');
+      else if (okMessage) toast(okMessage);
       return true;
     } catch (e) {
       toast(explainAny(e), 'bad');

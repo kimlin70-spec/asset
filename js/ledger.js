@@ -117,7 +117,7 @@ export function normalizeCurrency(input) {
 // 코드 정리: 대문자로, HTS 형식 A005930은 A를 떼고, 엑셀이 앞자리 0을 지운 국내 코드(5930)는 6자리로.
 export function normalizeCode(code) {
   let c = String(code ?? '').trim().toUpperCase();
-  if (/^A\d{6}$/.test(c)) c = c.slice(1); // HTS에서 쓰는 A005930 형식
+  if (/^A[0-9][0-9A-Z]{5}$/.test(c)) c = c.slice(1); // HTS에서 쓰는 A005930·A0091C0 형식
   if (/^\d{1,5}$/.test(c)) c = c.padStart(6, '0'); // 엑셀이 앞자리 0을 지운 경우(5930)
   return c;
 }
@@ -272,8 +272,16 @@ export function valuate(ledger, prices, opts = {}) {
         row.fx = fx;
         const native = isQtyItem(item) ? balance * row.price : balance;
         row.value = Math.round(native * fx) || 0;
+        // 환율 갱신이 실패해 이전 환율을 쓰는 중이면 그것도 "갱신 실패"
+        const fq = row.currency !== 'KRW' ? quotes[fxKey(row.currency)] : null;
+        if (fq && fq.ok === false && (row.status === 'ok' || row.status === 'stale')) {
+          if (row.status === 'ok' || !row.staleAt || (fq.at && fq.at < row.staleAt)) row.staleAt = fq.at || null;
+          row.status = 'stale';
+        }
       }
     }
+    if (row.status === 'stale' && row.quote && row.quote.ok === false && (!row.staleAt || (row.quote.at && row.quote.at < row.staleAt)))
+      row.staleAt = row.quote.at || row.staleAt || null;
     return row;
   });
 }
@@ -425,14 +433,25 @@ const FLOW_CLASSES = new Set(['현금', DEBT]);
 // 실사 기간 요약: 지난 실사 이후 "기록하지 않은 변화"를 원화로 나눠 본다.
 //   cash  : 현금·부채 항목의 실사 차이와 고치기 → 기록 안 한 수입 − 지출(생활비, 월급 등)
 //   other : 그 밖의 항목(채권·펀드 평가 갱신, 기록 안 한 매매의 수량 차이 등)
-//   added : 이번 실사에서 처음 들어온 항목(흐름이 아니라 시작 값이라 뺀다)
-// 같은 날짜의 실사(여러 계좌)는 한 번의 실사로 본다. 수량 항목은 지금 시세로 원화 환산한다(대략).
+//   added : 처음 들어온 항목(흐름이 아니라 시작 값이라 뺀다). 같은 날 다시 실사해도 처음 값은 흐름이 아니다.
+// 기간은 계좌마다 따로 잰다(그 계좌의 이전 실사, 없으면 첫 기록부터). 수량 항목은 지금 시세로 원화 환산(대략).
 export function periodSummary(ledger, prices, date) {
   const sorted = sortEntries(ledger.entries);
   const countsOnDay = sorted.filter((e) => e.type === COUNT && e.date === date);
   if (!countsOnDay.length) return null;
-  const prevCounts = sorted.filter((e) => e.type === COUNT && e.date < date);
-  const prev = prevCounts.length ? prevCounts[prevCounts.length - 1] : null;
+  const items = indexById(ledger.items);
+  const accountOf = (itemId) => (items.get(itemId) || {}).accountId;
+  const dayAccounts = new Set(countsOnDay.map((e) => e.accountId));
+  const prevByAcc = new Map(); // 그 날짜 전 마지막 실사
+  const lastOnDayByAcc = new Map(); // 그날 마지막 실사
+  const firstDateByAcc = new Map(); // 첫 기록 날짜
+  for (const e of sorted) {
+    const accs = e.type === COUNT ? [e.accountId] : e.lines.map((l) => accountOf(l.itemId));
+    for (const a of accs) if (a && !firstDateByAcc.has(a)) firstDateByAcc.set(a, e.date);
+    if (e.type !== COUNT || !dayAccounts.has(e.accountId)) continue;
+    if (e.date < date) prevByAcc.set(e.accountId, e);
+    else if (e.date === date) lastOnDayByAcc.set(e.accountId, e);
+  }
   const lastOnDay = countsOnDay[countsOnDay.length - 1];
 
   // 1단위의 원화 값(지금 시세·환율)
@@ -441,29 +460,30 @@ export function periodSummary(ledger, prices, date) {
     if (r.fx == null) unitKRW.set(r.item.id, 0);
     else unitKRW.set(r.item.id, isQtyItem(r.item) ? (r.price || 0) * r.fx : r.fx);
   }
-  const items = indexById(ledger.items);
-  const sum = { cash: 0, other: 0, added: 0 };
+  const perAcc = new Map();
   const lines = [];
   const add = (itemId, diff, isNew) => {
     const item = items.get(itemId);
     if (!item || !diff) return;
     const krw = Math.round(diff * (unitKRW.get(itemId) || 0));
     const category = isNew ? 'added' : FLOW_CLASSES.has(item.assetClass) ? 'cash' : 'other';
-    sum[category] += krw;
+    if (!perAcc.has(item.accountId)) perAcc.set(item.accountId, { cash: 0, other: 0, added: 0 });
+    perAcc.get(item.accountId)[category] += krw;
     lines.push({ itemId, diff, krw, category });
   };
 
-  // 실사 차이
+  // 실사 차이(그날 첫 실사 직전까지 한 번이라도 나온 항목만 흐름으로)
   const seen = new Set();
   const bal = new Map();
+  let seenBeforeDay = null;
   for (const e of sorted) {
     if (e.type === COUNT) {
       if (e.date === date) {
+        if (!seenBeforeDay) seenBeforeDay = new Set(seen);
         for (const v of e.values) {
           const item = items.get(v.itemId);
-          const prevBal = bal.get(v.itemId) || 0;
-          const diff = item ? roundForItem(item, v.value - prevBal) : 0;
-          add(v.itemId, diff, !seen.has(v.itemId));
+          const diff = item ? roundForItem(item, v.value - (bal.get(v.itemId) || 0)) : 0;
+          add(v.itemId, diff, !seenBeforeDay.has(v.itemId));
         }
       }
       for (const v of e.values) {
@@ -478,22 +498,39 @@ export function periodSummary(ledger, prices, date) {
     }
     if (e === lastOnDay) break;
   }
-  // 지난 실사와 이번 실사 사이의 고치기
+  // 고치기: 그 항목 계좌의 이전 실사 뒤 ~ 그날 그 계좌의 마지막 실사 앞
   for (const e of sorted) {
     if (e.type !== 'adjust') continue;
-    if (prev && !before(prev, e)) continue;
-    if (!before(e, lastOnDay)) break;
-    for (const l of e.lines) add(l.itemId, l.delta, false);
+    for (const l of e.lines) {
+      const a = accountOf(l.itemId);
+      if (!dayAccounts.has(a)) continue;
+      const prev = prevByAcc.get(a);
+      if (prev && !before(prev, e)) continue;
+      if (!before(e, lastOnDayByAcc.get(a))) continue;
+      add(l.itemId, l.delta, false);
+    }
   }
-  const days = prev ? daysBetween(prev.date, date) : null;
+
+  const sum = { cash: 0, other: 0, added: 0 };
+  for (const b of perAcc.values()) for (const k of Object.keys(sum)) sum[k] += b[k];
+  let prevDate = null;
+  let perMonth = 0;
+  for (const a of dayAccounts) {
+    const prev = prevByAcc.get(a);
+    if (prev && (!prevDate || prev.date < prevDate)) prevDate = prev.date;
+    const start = prev ? prev.date : firstDateByAcc.get(a);
+    const b = perAcc.get(a);
+    if (b && b.cash && start && start < date) perMonth += (b.cash / daysBetween(start, date)) * 30.4;
+  }
+  const days = prevDate ? daysBetween(prevDate, date) : null;
   return {
     date,
-    prevDate: prev ? prev.date : null,
+    prevDate,
     days,
     cash: sum.cash,
     other: sum.other,
     added: sum.added,
-    cashPerMonth: days ? Math.round((sum.cash / days) * 30.4) : null,
+    cashPerMonth: prevDate ? Math.round(perMonth) : null,
     lines,
   };
 }
@@ -617,10 +654,12 @@ function cleanEntry(ledger, entry) {
   return out;
 }
 
+// entry.id를 주면 그 id로 저장한다. 같은 id가 이미 있으면(앞에서 누른 저장이 이미 들어간 경우) 장부를 그대로 돌려준다.
 export function addEntry(ledger, entry) {
+  if (entry.id && (ledger.entries || []).some((e) => e.id === entry.id)) return ledger;
   const clean = cleanEntry(ledger, entry);
   const seq = ledger.nextSeq || 1;
-  const id = newId(clean.type === COUNT ? 'c' : 't');
+  const id = entry.id || newId(clean.type === COUNT ? 'c' : 't');
   return { ...ledger, nextSeq: seq + 1, entries: [...ledger.entries, { id, seq, ...clean }] };
 }
 
@@ -637,8 +676,8 @@ export function removeEntry(ledger, id) {
 }
 
 // 실사 한 건(한 계좌) 더하기. 같은 날 다시 해도 새 실사로 뒤에 쌓인다(그 순간의 확인).
-export function addCount(ledger, { accountId, date, values, memo }) {
-  return addEntry(ledger, { date, type: COUNT, accountId, values, memo });
+export function addCount(ledger, { id, accountId, date, values, memo }) {
+  return addEntry(ledger, { id, date, type: COUNT, accountId, values, memo });
 }
 
 // ---------- 입력 화면용 거래 만들기 (금액·수량은 모두 양수로 받는다) ----------
@@ -697,6 +736,7 @@ export function adjustTx(ledger, { date, itemId, newShownValue, memo, excludeId 
   if (!item) throw new LedgerError('항목을 골라 주세요.');
   const current = computeBalances(ledger, { asOf: date, exclude: excludeId }).get(itemId) || 0;
   const delta = roundForItem(item, toInternal(item, newShownValue) - current);
+  if (delta === 0) throw new LedgerError('그 날짜 값이 이미 그 값이에요. 바꿀 게 없어요.');
   return { date, type: 'adjust', lines: [{ itemId, delta }], memo };
 }
 
@@ -721,9 +761,10 @@ export function parsePaste(text) {
       return;
     }
     const [account, assetClass, name, code, amountText, currencyText = '', priceText = ''] = cells;
-    const amount = /^[-–−]$/.test(amountText) ? 0 : parseNumber(amountText);
-    const price = priceText === '' || /^[-–−]$/.test(priceText) ? null : parseNumber(priceText);
-    if (i === 0 && Number.isNaN(amount)) return; // 제목 줄
+    const dash = (t) => /^[-–−]$/.test(String(t).replace(/[\s₩$원]/g, '')); // 회계 서식의 0("-", "₩ -")
+    const amount = dash(amountText) ? 0 : parseNumber(amountText);
+    const price = priceText === '' || dash(priceText) ? null : parseNumber(priceText);
+    if (i === 0 && !ASSET_CLASSES.includes(assetClass) && Number.isNaN(amount)) return; // 제목 줄(자산군도 숫자도 아닌 첫 줄)
     const rowErrors = [];
     if (!account) rowErrors.push('계좌가 비었어요');
     if (!ASSET_CLASSES.includes(assetClass)) rowErrors.push(`자산군은 ${ASSET_CLASSES.join('·')} 중 하나여야 해요`);
@@ -747,10 +788,35 @@ export function parsePaste(text) {
   return { rows, errors };
 }
 
+// 붙여넣은 줄이 이미 있는 항목과 맞지 않으면(부채 여부·통화·수량/금액) 오류 문장. 미리보기와 저장에서 같이 쓴다.
+export function pasteConflicts(ledger, rows) {
+  const out = [];
+  for (const r of rows) {
+    const acc = findAccountByName(ledger, r.account);
+    if (!acc) continue;
+    const it = findItem(ledger, { accountId: acc.id, code: r.code, name: r.name });
+    const sameName = (ledger.items || []).find((i) => i.accountId === acc.id && i.name === r.name.trim());
+    const label = `${r.account} · ${r.name}`;
+    if (!it) {
+      if (sameName) out.push(`${label}: 이미 있는 "${sameName.name}"은 ${isQtyItem(sameName) ? `코드 ${sameName.code}의 수량 항목` : '코드 없는 금액 항목'}이라 맞지 않아요.`);
+      continue;
+    }
+    if (it.assetClass === DEBT && r.assetClass !== DEBT)
+      out.push(`${label}: 이미 있는 항목은 부채(대출)예요. 자산군을 부채로 맞춰 주세요.`);
+    else if (it.assetClass !== DEBT && r.assetClass === DEBT)
+      out.push(`${label}: 이미 있는 항목은 부채가 아니에요(${it.assetClass}). 자산군을 ${it.assetClass}(으)로 맞추거나, 대출이면 다른 이름으로 넣어 주세요.`);
+    else if (!isQtyItem(it) && (it.currency || 'KRW') !== r.currency)
+      out.push(`${label}: 이미 있는 항목의 통화는 ${it.currency || 'KRW'}예요. 통화 칸을 맞춰 주세요.`);
+  }
+  return out;
+}
+
 // 붙여넣은 줄을 장부에 넣는다. 계좌·항목은 없으면 만들고(이미 있으면 그 항목의 정보는 건드리지 않음),
 // 값은 계좌별 실사로 저장한다(같은 날짜 실사가 있으면 합친다).
-export function applyPaste(ledger, rows, date) {
+export function applyPaste(ledger, rows, date, idBase = null) {
   if (!isDateStr(date)) throw new LedgerError('기준일이 올바르지 않아요.');
+  const conflicts = pasteConflicts(ledger, rows);
+  if (conflicts.length) throw new LedgerError(conflicts[0]);
   let l = ledger;
   const byAccount = new Map();
   for (const r of rows) {
@@ -769,8 +835,9 @@ export function applyPaste(ledger, rows, date) {
     }
     values.set(item.id, v);
   }
+  let n = 0;
   for (const [accountId, values] of byAccount) {
-    l = addCount(l, { accountId, date, values: [...values.values()], memo: '붙여넣기' });
+    l = addCount(l, { id: idBase ? `${idBase}_${n++}` : undefined, accountId, date, values: [...values.values()], memo: '붙여넣기' });
   }
   return l;
 }

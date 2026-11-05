@@ -153,7 +153,8 @@ function accountCard(ledger, sum) {
 
 function statusBadge(r, today) {
   if (r.status === 'stale') {
-    const since = r.quote && r.quote.at ? L.daysBetween(L.kstDate(new Date(r.quote.at)), today) : null;
+    const at = r.staleAt || (r.quote && r.quote.at);
+    const since = at ? L.daysBetween(L.kstDate(new Date(at)), today) : null;
     return h('span', { class: 'badge warn', title: r.quote && r.quote.error ? r.quote.error : '' }, since != null ? `갱신 실패 ${since}일` : '갱신 실패');
   }
   if (r.status === 'temp') return h('span', { class: 'badge' }, '임시 단가');

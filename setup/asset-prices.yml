@@ -1,4 +1,4 @@
-# asset-prices v1 — 내 자산 현황 앱이 자동으로 만들고 맞추는 파일입니다. 직접 고치지 마세요.
+# asset-prices v2 — 내 자산 현황 앱이 자동으로 만들고 맞추는 파일입니다. 직접 고치지 마세요.
 # 매일 아침, 장부가 바뀔 때, 직접 실행할 때 시세를 받아 prices.json과 history.json을 갱신합니다.
 name: 시세 갱신
 
@@ -26,6 +26,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           path: data
+          ref: ${{ github.ref }} # 이벤트 때의 커밋이 아니라 지금 브랜치 끝(앞 실행의 커밋 포함)
           fetch-depth: 0
       - name: 앱 코드 받기
         uses: actions/checkout@v5

@@ -24,6 +24,10 @@ export function renderSettings(main, ctx) {
       ctx.toast('토큰을 넣어 주세요.', 'bad');
       return;
     }
+    if (!/^[\x21-\x7E]+$/.test(settings.token)) {
+      ctx.toast('토큰에 다른 글자(한글·보이지 않는 글자 등)가 섞였어요. GitHub에서 토큰만 다시 복사해 붙여 넣어 주세요.', 'bad');
+      return;
+    }
     btn.disabled = true;
     steps.replaceChildren();
     try {
