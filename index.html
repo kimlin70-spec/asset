@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.github.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#1f1d3a">
+  <title>내 자산</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./css/app.css">
+  <script type="module" src="./js/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="#/home">내 자산</a>
+      <nav class="tabs" aria-label="화면">
+        <a href="#/home" data-route="home">현황</a>
+        <a href="#/input" data-route="input">입력</a>
+        <a href="#/count" data-route="count">실사</a>
+        <a href="#/records" data-route="records">기록</a>
+        <a href="#/settings" data-route="settings">설정</a>
+      </nav>
+      <button class="icon-btn" id="reload" type="button" title="새로 불러오기" aria-label="새로 불러오기">↻</button>
+    </div>
+  </header>
+  <main id="app" tabindex="-1">
+    <p class="muted center pad">불러오는 중…</p>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <noscript><p class="pad">이 앱은 자바스크립트가 필요해요.</p></noscript>
+</body>
+</html>

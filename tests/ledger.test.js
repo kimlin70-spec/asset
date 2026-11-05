@@ -115,10 +115,9 @@ test('실사 이전 거래를 고쳐도 실사 이후 잔액은 그대로, 보�
   const s = setup();
   const { kiwoom, cash, samsung } = s.ids;
   s.l = L.addEntry(s.l, { date: '2026-11-01', type: 'count', accountId: kiwoom, values: [{ itemId: cash, value: 1000000 }] });
-  // 추정 매수 70만
-  s.l = L.addEntry(s.l, L.buyTx({ date: '2026-11-03', cashItemId: cash, amount: 700000, stockItemId: samsung, qty: 10, estimated: true }));
+  // 단가×수량으로 대충 넣은 매수 70만
+  s.l = L.addEntry(s.l, L.buyTx({ date: '2026-11-03', cashItemId: cash, amount: 700000, stockItemId: samsung, qty: 10 }));
   const buyId = s.l.entries.at(-1).id;
-  assert.equal(s.l.entries.at(-1).estimated, true);
   // 월말 실사: 실제 예수금 299,895
   s.l = L.addEntry(s.l, { date: '2026-11-30', type: 'count', accountId: kiwoom, values: [{ itemId: cash, value: 299895 }, { itemId: samsung, value: 10 }] });
   const countId = s.l.entries.at(-1).id;
@@ -126,7 +125,6 @@ test('실사 이전 거래를 고쳐도 실사 이후 잔액은 그대로, 보�
   assert.deepEqual(L.countDiffs(s.l, countId).find((d) => d.itemId === cash).diff, -105);
   // 거래내역 보고 정산금액으로 고침
   s.l = L.updateEntry(s.l, buyId, L.buyTx({ date: '2026-11-03', cashItemId: cash, amount: 700105, stockItemId: samsung, qty: 10 }));
-  assert.equal(s.l.entries.find((e) => e.id === buyId).estimated, undefined);
   assert.equal(bal(s.l, cash), 299895); // 그대로
   assert.equal(L.countDiffs(s.l, countId).find((d) => d.itemId === cash).diff, 0); // 차이가 설명됨
   // 실사 이후 거래는 정상 반영
@@ -134,39 +132,56 @@ test('실사 이전 거래를 고쳐도 실사 이후 잔액은 그대로, 보�
   assert.equal(bal(s.l, cash), 300000);
 });
 
-test('같은 날짜에서는 실사가 그날 끝: 실사 뒤에 입력한 같은 날짜 거래도 실사 앞으로 계산', () => {
+test('같은 날짜는 입력 순서: 실사(확인) 뒤에 입력한 같은 날 거래는 실사 뒤에 반영', () => {
   const s = setup();
   const { kiwoom, cash } = s.ids;
   s.l = L.addEntry(s.l, { date: '2026-11-30', type: 'count', accountId: kiwoom, values: [{ itemId: cash, value: 500000 }] });
   const tx = L.outTx({ date: '2026-11-30', itemId: cash, amount: 1000 });
-  assert.deepEqual(L.absorbedBy(s.l, tx), [{ itemId: cash, countDate: '2026-11-30' }]); // 화면 안내용
+  assert.deepEqual(L.absorbedBy(s.l, tx), []); // 새 거래는 실사 뒤
   s.l = L.addEntry(s.l, tx);
-  assert.equal(bal(s.l, cash), 500000);
-  // 다음 날 거래는 그대로 반영
-  const next = L.outTx({ date: '2026-12-01', itemId: cash, amount: 1000 });
-  assert.deepEqual(L.absorbedBy(s.l, next), []);
-  s.l = L.addEntry(s.l, next);
+  assert.equal(bal(s.l, cash), 499000);
+  // 실사 날짜보다 앞선 날짜로 넣으면 실사가 기준(안내 대상)
+  const late = L.outTx({ date: '2026-11-29', itemId: cash, amount: 1000 });
+  assert.deepEqual(L.absorbedBy(s.l, late), [{ itemId: cash, countDate: '2026-11-30' }]);
+  s.l = L.addEntry(s.l, late);
   assert.equal(bal(s.l, cash), 499000);
 });
 
-test('같은 계좌·같은 날짜 실사는 하나: 다시 하면 합쳐서 고친다', () => {
+test('같은 날 다시 실사해도 그 사이 거래가 두 번 더해지지 않는다', () => {
+  const s = setup();
+  const { kiwoom, cash } = s.ids;
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-30', values: [{ itemId: cash, value: 500000 }] });
+  s.l = L.addEntry(s.l, L.outTx({ date: '2026-11-30', itemId: cash, amount: 1000 }));
+  assert.equal(bal(s.l, cash), 499000);
+  // 다시 실사: 실제 값 499,000(방금 거래 포함)
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-30', values: [{ itemId: cash, value: 499000 }] });
+  assert.equal(bal(s.l, cash), 499000);
+});
+
+test('같은 날 실사를 다시 하면 새 실사가 뒤에 쌓이고 나중 것이 기준', () => {
   const s = setup();
   const { kiwoom, cash, samsung } = s.ids;
-  s.l = L.upsertCount(s.l, { accountId: kiwoom, date: '2026-11-30', values: [{ itemId: cash, value: 1 }, { itemId: samsung, value: 3 }] });
-  assert.throws(() => L.addEntry(s.l, { date: '2026-11-30', type: 'count', accountId: kiwoom, values: [{ itemId: cash, value: 2 }] }), /이미 있어요/);
-  s.l = L.upsertCount(s.l, { accountId: kiwoom, date: '2026-11-30', values: [{ itemId: cash, value: 2 }] });
-  assert.equal(s.l.entries.filter((e) => e.type === 'count').length, 1);
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-30', values: [{ itemId: cash, value: 1 }, { itemId: samsung, value: 3 }] });
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-30', values: [{ itemId: cash, value: 2 }] });
+  assert.equal(s.l.entries.filter((e) => e.type === 'count').length, 2);
   assert.equal(bal(s.l, cash), 2);
   assert.equal(bal(s.l, samsung), 3);
   assert.deepEqual(L.validateLedger(s.l), []);
+  const second = s.l.entries.at(-1);
+  assert.deepEqual(L.countDiffs(s.l, second.id), [{ itemId: cash, value: 2, before: 1, diff: 1, first: false }]);
 });
 
-test('같은 날짜에 거래를 먼저 입력하고 실사하면 실사값이 기준', () => {
-  const s = setup();
-  const { kiwoom, cash } = s.ids;
-  s.l = L.addEntry(s.l, L.outTx({ date: '2026-11-30', itemId: cash, amount: 1000 }));
-  s.l = L.addEntry(s.l, { date: '2026-11-30', type: 'count', accountId: kiwoom, values: [{ itemId: cash, value: 500000 }] });
-  assert.equal(bal(s.l, cash), 500000);
+test('붙여넣기 단가는 같은 날 다시 실사해도 남는다(시세 오기 전 0원이 되지 않게)', () => {
+  const { rows } = L.parsePaste('증권\t국내주식\tKODEX 200\t069500\t100\t\t100,000\n증권\t현금\t예수금\t\t1000\t\t');
+  let l = L.applyPaste(L.emptyLedger(), rows, '2026-11-05');
+  const kodex = l.items.find((i) => i.name === 'KODEX 200');
+  const cash = l.items.find((i) => i.name === '예수금');
+  l = L.addCount(l, { accountId: kodex.accountId, date: '2026-11-05', values: [{ itemId: kodex.id, value: 100 }, { itemId: cash.id, value: 900 }] });
+  const row = L.valuate(l, { quotes: {} }).find((r) => r.item.id === kodex.id);
+  assert.equal(row.status, 'temp');
+  assert.equal(row.value, 100 * 100000);
+  const first = l.entries.find((e) => e.memo === '붙여넣기');
+  assert.ok(L.countDiffs(l, first.id).every((d) => d.first));
 });
 
 test('실사 날짜보다 앞선 날짜로 뒤늦게 넣은 거래: 실사한 항목은 흡수, 실사에 없던 항목은 반영', () => {
@@ -559,4 +574,68 @@ test('통화는 한글·기호로 적어도 알아듣는다', () => {
   const { rows, errors } = L.parsePaste('키움\t현금\t달러 예수금\t\t12.5\t달러');
   assert.deepEqual(errors, []);
   assert.equal(rows[0].currency, 'USD');
+});
+
+test('붙여넣기 단가: 시세가 오기 전 임시 평가에 쓴다', () => {
+  const text = ['계좌\t자산군\t이름\t코드\t수량\t통화\t단가', '증권\t해외주식\tTIGER 미국S&P500\t360750\t1,500\t\t25,000', '증권\t해외주식\t애플\tAAPL\t10\tUSD\t200.5', '증권\t현금\t예수금\t\t-\t\t'].join('\n');
+  const { rows, errors } = L.parsePaste(text);
+  assert.deepEqual(errors, []);
+  assert.equal(rows[0].price, 25000);
+  assert.equal(rows[2].amount, 0); // 회계 서식의 '-'
+  const l = L.applyPaste(L.emptyLedger(), rows, '2026-11-05');
+  assert.deepEqual(L.validateLedger(l), []);
+  const byName = (n) => L.valuate(l, { quotes: { 'FX:USD': { price: 1400 } } }).find((r) => r.item.name === n);
+  assert.equal(byName('TIGER 미국S&P500').status, 'temp');
+  assert.equal(byName('TIGER 미국S&P500').value, 1500 * 25000);
+  assert.equal(byName('애플').value, Math.round(10 * 200.5 * 1400));
+  // 시세가 들어오면 시세를 쓴다
+  const withQuote = L.valuate(l, { quotes: { 'KR:360750': { price: 27000, currency: 'KRW' } } }).find((r) => r.item.name === 'TIGER 미국S&P500');
+  assert.equal(withQuote.status, 'ok');
+  assert.equal(withQuote.value, 1500 * 27000);
+  assert.deepEqual(L.neededCurrencies(l, { quotes: {} }), ['USD']);
+});
+
+test('붙여넣기: 단가가 숫자가 아니면 오류', () => {
+  const { errors } = L.parsePaste('증권\t국내주식\t삼성전자\t005930\t10\t\tabc');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /단가/);
+});
+
+test('실사 기간 요약: 기록 안 한 현금 흐름(수입−지출)과 그 밖의 차이', () => {
+  const s = setup();
+  const { kiwoom, bank, cash, samsung, deposit } = s.ids;
+  const prices = { quotes: { 'KR:005930': { price: 70000, currency: 'KRW' } } };
+  // 9/5 첫 실사(붙여넣기 같은 시작 값)
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-09-05', values: [{ itemId: cash, value: 1000000 }, { itemId: samsung, value: 10 }] });
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-09-05', values: [{ itemId: deposit, value: 5000000 }] });
+  let first = L.periodSummary(s.l, prices, '2026-09-05');
+  assert.equal(first.prevDate, null);
+  assert.equal(first.added, 1000000 + 700000 + 5000000); // 시작 값은 흐름이 아니다
+  assert.equal(first.cash, 0);
+  // 그 사이 기록한 매수(정상 반영, 흐름 아님)
+  s.l = L.addEntry(s.l, L.buyTx({ date: '2026-10-01', cashItemId: cash, amount: 700000, stockItemId: samsung, qty: 10 }));
+  // 통장 잔액 고치기(빠뜨린 입금 100만): 기간 요약에 들어간다
+  s.l = L.addEntry(s.l, L.adjustTx(s.l, { date: '2026-10-10', itemId: deposit, newShownValue: 6000000 }));
+  // 11/4 실사: 통장 실제 4,200,000(생활비로 180만 더 씀), 삼성전자 실제 21주(기록 안 한 매수 1주)
+  s.l = L.addCount(s.l, { accountId: kiwoom, date: '2026-11-04', values: [{ itemId: cash, value: 300000 }, { itemId: samsung, value: 21 }] });
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-11-04', values: [{ itemId: deposit, value: 4200000 }] });
+  const p = L.periodSummary(s.l, prices, '2026-11-04');
+  assert.equal(p.prevDate, '2026-09-05');
+  assert.equal(p.days, 60);
+  assert.equal(p.cash, 1000000 - 1800000); // 고치기 +100만, 실사 차이 -180만
+  assert.equal(p.other, 70000); // 삼성전자 +1주
+  assert.equal(p.added, 0);
+  assert.equal(p.cashPerMonth, Math.round((-800000 / 60) * 30.4));
+  assert.equal(L.periodSummary(s.l, prices, '2026-10-01'), null);
+  assert.deepEqual(L.countDates(s.l), ['2026-09-05', '2026-11-04']);
+});
+
+test('실사 기간 요약: 대출을 기록 없이 갚았으면 현금과 부채가 서로 상쇄된다', () => {
+  const s = setup();
+  const { bank, deposit, loan } = s.ids;
+  const loanItem = s.l.items.find((i) => i.id === loan);
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-09-01', values: [{ itemId: deposit, value: 5000000 }, { itemId: loan, value: L.toInternal(loanItem, 10000000) }] });
+  s.l = L.addCount(s.l, { accountId: bank, date: '2026-11-01', values: [{ itemId: deposit, value: 4000000 }, { itemId: loan, value: L.toInternal(loanItem, 9000000) }] });
+  const p = L.periodSummary(s.l, {}, '2026-11-01');
+  assert.equal(p.cash, 0);
 });
