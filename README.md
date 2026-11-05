@@ -76,7 +76,9 @@
 ### 시세
 - 매일 아침 06:47 무렵, 장부를 저장할 때, 직접 실행할 때 GitHub가 자동으로 받아요(내 데이터 저장소의 Actions).
 - 지금 바로 받으려면: `github.com/내아이디/asset-data` → **Actions** → 왼쪽 **시세 갱신** → **Run workflow** → 1~2분 뒤 앱의 ↻.
-- 출처: 국내 네이버·야후, 해외 야후, 코인 업비트·야후, 환율 야후·[ExchangeRate-API](https://www.exchangerate-api.com)(Rates By Exchange Rate API). 비공식 출처라 가끔 실패하면 이전 가격을 쓰고 "갱신 실패 N일"로 표시해요.
+- 실시간일 필요는 없어서 **전날 종가 기준**이면 충분해요. 출처도 내가 거래하는 곳일 필요 없이 공개된 시세를 써요:
+  국내 네이버·야후, 해외 야후, 코인 업비트·야후, 환율 야후·[ExchangeRate-API](https://www.exchangerate-api.com)(Rates By Exchange Rate API).
+- 비공식 출처라 가끔 못 받을 수 있어요. 하루 이틀은 이전 가격을 조용히 쓰고, 3일 넘게 못 받으면 보유 목록에 "시세 N일 전 것"으로 표시해요.
 
 ## 문제가 생기면
 - **"토큰이 만료됐거나 잘못됐어요"**: 2번을 다시 해서 새 토큰을 만들고 설정에 넣어요.

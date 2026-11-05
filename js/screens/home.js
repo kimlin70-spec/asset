@@ -7,6 +7,15 @@ import { openItemDialog } from './item-dialog.js';
 
 let chartMode = 'daily';
 const COUNT_CYCLE_DAYS = 60;
+// 시세는 전날 종가면 충분하다. 하루 이틀 못 받으면 조용히 이전 가격을 쓰고, 이만큼 넘게 못 받으면 알린다.
+const STALE_WARN_DAYS = 3;
+
+// 마지막으로 시세(또는 환율)를 받은 뒤 며칠 지났는지. 갱신 실패가 아니면 null
+function staleDays(r, today) {
+  if (r.status !== 'stale') return null;
+  const at = r.staleAt || (r.quote && r.quote.at);
+  return at ? L.daysBetween(L.kstDate(new Date(at)), today) : STALE_WARN_DAYS;
+}
 
 export function renderHome(main, ctx) {
   const { ledger, prices, history } = ctx.store;
@@ -56,7 +65,8 @@ function heroCard(ctx, sum, held, today) {
   const badges = [];
   badges.push(h('span', { class: 'badge' }, prices.updatedAt ? `시세 ${kstTime(prices.updatedAt)} 기준` : '시세 아직 안 받음'));
   const n = (st) => held.filter((r) => r.status === st).length;
-  if (n('stale')) badges.push(h('span', { class: 'badge warn' }, `시세 갱신 실패 ${n('stale')}개`));
+  const staleCount = held.filter((r) => (staleDays(r, today) ?? -1) >= STALE_WARN_DAYS).length;
+  if (staleCount) badges.push(h('span', { class: 'badge warn' }, `시세 ${STALE_WARN_DAYS}일 넘게 못 받음 ${staleCount}개`));
   if (n('temp')) badges.push(h('span', { class: 'badge' }, `임시 단가 ${n('temp')}개`));
   if (n('none')) badges.push(h('span', { class: 'badge bad' }, `시세 없음 ${n('none')}개`));
   if (n('nofx')) badges.push(h('span', { class: 'badge bad' }, `환율 없음 ${n('nofx')}개`));
@@ -153,9 +163,9 @@ function accountCard(ledger, sum) {
 
 function statusBadge(r, today) {
   if (r.status === 'stale') {
-    const at = r.staleAt || (r.quote && r.quote.at);
-    const since = at ? L.daysBetween(L.kstDate(new Date(at)), today) : null;
-    return h('span', { class: 'badge warn', title: r.quote && r.quote.error ? r.quote.error : '' }, since != null ? `갱신 실패 ${since}일` : '갱신 실패');
+    const days = staleDays(r, today);
+    if (days < STALE_WARN_DAYS) return null; // 전날 종가 정도면 충분하므로 표시하지 않음
+    return h('span', { class: 'badge warn', title: r.quote && r.quote.error ? r.quote.error : '' }, `시세 ${days}일 전 것`);
   }
   if (r.status === 'temp') return h('span', { class: 'badge' }, '임시 단가');
   if (r.status === 'none') return h('span', { class: 'badge bad' }, '시세 없음');
