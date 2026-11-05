@@ -1,0 +1,9 @@
+{
+  "name": "asset",
+  "private": true,
+  "type": "module",
+  "description": "내 자산 현황 웹앱 (빌드 없음, 외부 의존성 없음)",
+  "scripts": {
+    "test": "node --test"
+  }
+}

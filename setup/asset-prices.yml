@@ -1,0 +1,58 @@
+# asset-prices v2 — 내 자산 현황 앱이 자동으로 만들고 맞추는 파일입니다. 직접 고치지 마세요.
+# 매일 아침, 장부가 바뀔 때, 직접 실행할 때 시세를 받아 prices.json과 history.json을 갱신합니다.
+name: 시세 갱신
+
+on:
+  schedule:
+    - cron: '47 21 * * *' # 매일 06:47 KST (UTC 21:47). 정각은 붐벼서 피함
+  push:
+    paths:
+      - ledger.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: asset-prices
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 내 데이터 받기
+        uses: actions/checkout@v5
+        with:
+          path: data
+          ref: ${{ github.ref }} # 이벤트 때의 커밋이 아니라 지금 브랜치 끝(앞 실행의 커밋 포함)
+          fetch-depth: 0
+      - name: 앱 코드 받기
+        uses: actions/checkout@v5
+        with:
+          repository: __APP_REPO__
+          ref: main
+          path: app
+          persist-credentials: false
+      - name: 시세 받기와 오늘 합계
+        run: node app/actions/update.js data
+      - name: 저장
+        working-directory: data
+        run: |
+          git config user.name "asset-prices-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prices.json history.json
+          if git diff --cached --quiet; then
+            echo "바뀐 것 없음"
+            exit 0
+          fi
+          git commit -q -m "시세 갱신 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
+          for i in 1 2 3; do
+            if git pull -q --rebase && git push -q; then
+              exit 0
+            fi
+            sleep $((i * 5))
+          done
+          echo "저장 실패"
+          exit 1
