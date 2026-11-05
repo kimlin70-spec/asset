@@ -117,7 +117,8 @@ function editDialog(ctx, e, items) {
         const it = items.get(l.itemId);
         const input = h('input', { type: 'text', inputmode: 'decimal', value: String(Math.abs(l.delta)) });
         fields.push({ l, it, input });
-        rows.append(h('label', null, `${label(ctx, it)} (${l.delta < 0 ? '빠짐' : '늘어남'})`), input);
+        const dir = it && it.assetClass === L.DEBT ? (l.delta < 0 ? '빚 늘어남' : '빚 줄어듦') : l.delta < 0 ? '빠짐' : '늘어남';
+        rows.append(h('label', null, `${label(ctx, it)} (${dir})`), input);
       }
     }
     const save = async () => {

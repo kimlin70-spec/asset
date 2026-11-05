@@ -11,6 +11,7 @@ import { renderSettings } from './screens/settings.js';
 
 const SCREENS = { home: renderHome, input: renderInput, count: renderCount, records: renderRecords, settings: renderSettings };
 const main = document.getElementById('app');
+let saving = false; // 저장 버튼을 두 번 눌러 같은 거래가 두 번 들어가지 않게
 
 export function explainAny(e) {
   if (e instanceof GitHubError) return explain(e);
@@ -96,6 +97,12 @@ const ctx = {
 
   // 장부 저장. 성공하면 true
   async save(op, message, okMessage) {
+    if (saving) {
+      toast('저장하는 중이에요. 잠시만 기다려 주세요.');
+      return false;
+    }
+    saving = true;
+    document.body.classList.add('saving');
     try {
       await ctx.store.mutate(op, message);
       if (okMessage) toast(okMessage);
@@ -103,6 +110,9 @@ const ctx = {
     } catch (e) {
       toast(explainAny(e), 'bad');
       return false;
+    } finally {
+      saving = false;
+      document.body.classList.remove('saving');
     }
   },
 };
